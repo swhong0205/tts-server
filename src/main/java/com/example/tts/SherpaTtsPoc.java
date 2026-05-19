@@ -260,7 +260,7 @@ public class SherpaTtsPoc {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>sherpa-onnx 한국어 TTS</title>
+  <title>한국어 TTS 데모</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -280,9 +280,52 @@ public class SherpaTtsPoc {
       max-width: 560px;
       box-shadow: 0 4px 24px rgba(0,0,0,0.10);
     }
-    h1 { font-size: 1.4rem; color: #1a1a2e; margin-bottom: 6px; }
-    .subtitle { font-size: 0.85rem; color: #888; margin-bottom: 28px; }
+    h1 { font-size: 1.4rem; color: #1a1a2e; margin-bottom: 24px; }
     label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 6px; font-weight: 500; }
+
+    /* 엔진 선택 토글 */
+    .engine-toggle {
+      display: flex;
+      background: #f0f2f5;
+      border-radius: 10px;
+      padding: 4px;
+      margin-bottom: 20px;
+      gap: 4px;
+    }
+    .engine-btn {
+      flex: 1;
+      padding: 9px 0;
+      border: none;
+      border-radius: 7px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      background: transparent;
+      color: #888;
+      transition: all .2s;
+      width: auto;
+      margin-top: 0;
+    }
+    .engine-btn.active {
+      background: #fff;
+      color: #4f6ef7;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.12);
+    }
+
+    /* F5-TTS URL 입력 */
+    #f5url-row { margin-bottom: 16px; }
+    input[type=text] {
+      width: 100%;
+      border: 1.5px solid #dde1e7;
+      border-radius: 8px;
+      padding: 9px 12px;
+      font-size: 0.9rem;
+      outline: none;
+      color: #333;
+      transition: border-color .2s;
+    }
+    input[type=text]:focus { border-color: #4f6ef7; }
+
     textarea {
       width: 100%;
       height: 120px;
@@ -297,16 +340,12 @@ public class SherpaTtsPoc {
       color: #222;
     }
     textarea:focus { border-color: #4f6ef7; }
-    .controls {
-      display: flex;
-      gap: 16px;
-      margin: 16px 0;
-    }
+    .controls { display: flex; gap: 16px; margin: 16px 0; }
     .control-group { flex: 1; }
     input[type=range] { width: 100%; accent-color: #4f6ef7; }
     .range-row { display: flex; justify-content: space-between; align-items: center; }
     .range-val { font-size: 0.85rem; color: #4f6ef7; font-weight: 600; min-width: 32px; text-align: right; }
-    button {
+    .synth-btn {
       width: 100%;
       padding: 14px;
       background: #4f6ef7;
@@ -319,15 +358,12 @@ public class SherpaTtsPoc {
       transition: background .2s, transform .1s;
       margin-top: 8px;
     }
-    button:hover:not(:disabled) { background: #3a57e8; }
-    button:active:not(:disabled) { transform: scale(0.98); }
-    button:disabled { background: #a0aec0; cursor: not-allowed; }
+    .synth-btn:hover:not(:disabled) { background: #3a57e8; }
+    .synth-btn:active:not(:disabled) { transform: scale(0.98); }
+    .synth-btn:disabled { background: #a0aec0; cursor: not-allowed; }
     .status {
-      margin-top: 16px;
-      padding: 10px 14px;
-      border-radius: 8px;
-      font-size: 0.88rem;
-      display: none;
+      margin-top: 16px; padding: 10px 14px;
+      border-radius: 8px; font-size: 0.88rem; display: none;
     }
     .status.loading { background: #ebf0ff; color: #4f6ef7; display: block; }
     .status.success { background: #e6faf2; color: #1a7f5a; display: block; }
@@ -339,10 +375,24 @@ public class SherpaTtsPoc {
 <body>
 <div class="card">
   <h1>🔊 한국어 TTS 데모</h1>
-  <p class="subtitle">sherpa-onnx · vits-mimic3-ko_KO-kss_low</p>
+
+  <label>엔진 선택</label>
+  <div class="engine-toggle">
+    <button class="engine-btn active" id="btn-sherpa" onclick="selectEngine('sherpa')">
+      Sherpa-ONNX
+    </button>
+    <button class="engine-btn" id="btn-f5" onclick="selectEngine('f5')">
+      F5-TTS
+    </button>
+  </div>
+
+  <div id="f5url-row" style="display:none">
+    <label for="f5url">F5-TTS 서버 주소</label>
+    <input type="text" id="f5url" value="http://localhost:8000">
+  </div>
 
   <label for="text">합성할 텍스트</label>
-  <textarea id="text" placeholder="여기에 한국어 텍스트를 입력하세요.">안녕하세요. 셰르파 온넥스 한국어 TTS 데모입니다.</textarea>
+  <textarea id="text" placeholder="여기에 한국어 텍스트를 입력하세요.">안녕하세요. 한국어 TTS 데모입니다.</textarea>
 
   <div class="controls">
     <div class="control-group">
@@ -352,8 +402,8 @@ public class SherpaTtsPoc {
         <span class="range-val" id="speedVal">1.0</span>
       </div>
     </div>
-    <div class="control-group">
-      <label>화자 ID</label>
+    <div class="control-group" id="sid-group">
+      <label>화자 ID (Sherpa 전용)</label>
       <div class="range-row">
         <input type="range" id="sid" min="0" max="10" step="1" value="0">
         <span class="range-val" id="sidVal">0</span>
@@ -361,24 +411,34 @@ public class SherpaTtsPoc {
     </div>
   </div>
 
-  <button id="btn" onclick="synthesize()">음성 합성</button>
+  <button class="synth-btn" id="btn" onclick="synthesize()">음성 합성</button>
 
   <div class="status" id="status"></div>
   <audio id="player" controls></audio>
 </div>
 
 <script>
+  let engine = 'sherpa';
+
   document.getElementById('speed').oninput = e =>
     document.getElementById('speedVal').textContent = (+e.target.value).toFixed(1);
   document.getElementById('sid').oninput = e =>
     document.getElementById('sidVal').textContent = e.target.value;
+
+  function selectEngine(e) {
+    engine = e;
+    document.getElementById('btn-sherpa').classList.toggle('active', e === 'sherpa');
+    document.getElementById('btn-f5').classList.toggle('active', e === 'f5');
+    document.getElementById('f5url-row').style.display = e === 'f5' ? 'block' : 'none';
+    document.getElementById('sid-group').style.opacity = e === 'f5' ? '0.35' : '1';
+    document.getElementById('sid-group').style.pointerEvents = e === 'f5' ? 'none' : 'auto';
+  }
 
   async function synthesize() {
     const text  = document.getElementById('text').value.trim();
     const speed = parseFloat(document.getElementById('speed').value);
     const sid   = parseInt(document.getElementById('sid').value);
     const btn   = document.getElementById('btn');
-    const status = document.getElementById('status');
     const player = document.getElementById('player');
 
     if (!text) { showStatus('error', '텍스트를 입력해 주세요.'); return; }
@@ -389,26 +449,36 @@ public class SherpaTtsPoc {
 
     try {
       const t0 = Date.now();
-      const res = await fetch('/tts', {
+      let url, body;
+
+      if (engine === 'sherpa') {
+        url  = '/tts';
+        body = JSON.stringify({ text, speed, sid });
+      } else {
+        const base = document.getElementById('f5url').value.replace(/\\/$/, '');
+        url  = base + '/tts';
+        body = JSON.stringify({ text, speed });
+      }
+
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, speed, sid })
+        body,
       });
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(err.error || res.statusText);
+        throw new Error(err.detail || err.error || res.statusText);
       }
 
       const blob = await res.blob();
       const elapsed = Date.now() - t0;
-      const url = URL.createObjectURL(blob);
-
-      player.src = url;
+      player.src = URL.createObjectURL(blob);
       player.classList.add('visible');
       player.play();
 
-      showStatus('success', `✅ 합성 완료 (${elapsed} ms · ${(blob.size/1024).toFixed(1)} KB)`);
+      const engineLabel = engine === 'sherpa' ? 'Sherpa-ONNX' : 'F5-TTS';
+      showStatus('success', `✅ ${engineLabel} 합성 완료 (${elapsed} ms · ${(blob.size/1024).toFixed(1)} KB)`);
     } catch (e) {
       showStatus('error', '❌ 오류: ' + e.message);
     } finally {

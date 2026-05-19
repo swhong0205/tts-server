@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel
 import os, io, logging, soundfile as sf
@@ -37,6 +38,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Korean TTS API (F5-TTS)", version="1.0.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 class SynthRequest(BaseModel):
