@@ -313,18 +313,6 @@ public class SherpaTtsPoc {
     }
 
     /* F5-TTS URL 입력 */
-    #f5url-row { margin-bottom: 16px; }
-    input[type=text] {
-      width: 100%;
-      border: 1.5px solid #dde1e7;
-      border-radius: 8px;
-      padding: 9px 12px;
-      font-size: 0.9rem;
-      outline: none;
-      color: #333;
-      transition: border-color .2s;
-    }
-    input[type=text]:focus { border-color: #4f6ef7; }
 
     textarea {
       width: 100%;
@@ -386,10 +374,6 @@ public class SherpaTtsPoc {
     </button>
   </div>
 
-  <div id="f5url-row" style="display:none">
-    <label for="f5url">F5-TTS 서버 주소</label>
-    <input type="text" id="f5url" value="http://localhost:8000">
-  </div>
 
   <label for="text">합성할 텍스트</label>
   <textarea id="text" placeholder="여기에 한국어 텍스트를 입력하세요.">안녕하세요. 한국어 TTS 데모입니다.</textarea>
@@ -429,7 +413,6 @@ public class SherpaTtsPoc {
     engine = e;
     document.getElementById('btn-sherpa').classList.toggle('active', e === 'sherpa');
     document.getElementById('btn-f5').classList.toggle('active', e === 'f5');
-    document.getElementById('f5url-row').style.display = e === 'f5' ? 'block' : 'none';
     document.getElementById('sid-group').style.opacity = e === 'f5' ? '0.35' : '1';
     document.getElementById('sid-group').style.pointerEvents = e === 'f5' ? 'none' : 'auto';
   }
@@ -449,16 +432,8 @@ public class SherpaTtsPoc {
 
     try {
       const t0 = Date.now();
-      let url, body;
-
-      if (engine === 'sherpa') {
-        url  = '/tts';
-        body = JSON.stringify({ text, speed, sid });
-      } else {
-        const base = document.getElementById('f5url').value.replace(/\\/$/, '');
-        url  = base + '/tts';
-        body = JSON.stringify({ text, speed });
-      }
+      const url  = '/tts';
+      const body = JSON.stringify({ text, speed, sid, engine });
 
       const res = await fetch(url, {
         method: 'POST',
