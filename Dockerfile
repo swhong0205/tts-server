@@ -1,6 +1,15 @@
 # ============================================================
 # sherpa-onnx 한국어 TTS PoC - Dockerfile
 #
+# sherpa-onnx 는 Maven Central 미배포이므로, libs/ 디렉터리에
+# 미리 다운로드된 JAR 와 .so 파일을 사용합니다.
+#
+# 빌드 전 준비 사항 (로컬 머신):
+#   libs/sherpa-onnx-java17.jar
+#   libs/libsherpa-onnx-jni.so
+#   libs/libonnxruntime.so
+#   (모두 GitHub Releases v1.12.0 에서 다운로드)
+#
 # 멀티 스테이지 빌드:
 #   Stage 1 (builder): Gradle + JDK 17 → Fat JAR 생성
 #   Stage 2 (runtime): JRE 17 (Ubuntu/Jammy) → 경량 실행 이미지
@@ -20,12 +29,15 @@ LABEL stage="builder"
 WORKDIR /build
 
 # 의존성 캐시 레이어 최적화:
-# 소스 변경 전에 build.gradle / settings.gradle 만 먼저 복사하여
-# 소스가 바뀌어도 의존성 다운로드 레이어를 재사용합니다.
+# build.gradle / settings.gradle 만 먼저 복사하여
+# 소스가 변경되어도 의존성 레이어를 재사용합니다.
 COPY build.gradle settings.gradle ./
 COPY gradle/           gradle/
 
-# 의존성만 미리 다운로드 (캐시 활용)
+# libs/ 폴더의 로컬 JAR 복사 (sherpa-onnx Java API)
+COPY libs/             libs/
+
+# 의존성 확인 (캐시 활용)
 RUN gradle dependencies --no-daemon --quiet 2>&1 || true
 
 # 전체 소스 복사 후 Fat JAR 빌드
@@ -45,7 +57,6 @@ LABEL maintainer="tts-poc"
 LABEL description="sherpa-onnx 한국어 TTS PoC (Java 17 / Ubuntu Jammy)"
 
 # 한국어 로케일 및 필수 런타임 라이브러리 설치
-# libstdc++6, libgomp1: sherpa-onnx C++ 네이티브 라이브러리 의존성
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libstdc++6 \
@@ -58,33 +69,27 @@ RUN apt-get update \
 ENV LANG=ko_KR.UTF-8 \
     LC_ALL=ko_KR.UTF-8
 
-# 애플리케이션 작업 디렉터리
 WORKDIR /app
 
 # 빌드 스테이지에서 생성된 Fat JAR 복사
 COPY --from=builder /build/build/libs/tts-poc.jar /app/tts-poc.jar
 
+# 네이티브 .so 파일 복사 (libsherpa-onnx-jni.so, libonnxruntime.so)
+COPY libs/*.so /app/libs/
+
 # ----------------------------------------------------------
 # 한국어 TTS 모델 디렉터리 마운트 포인트
 #
-# 두 가지 방법으로 모델을 제공할 수 있습니다:
+#   방법 A. 빌드 시 COPY (이미지에 포함)
+#     → 아래 COPY 줄 주석 해제
 #
-#   방법 A. Dockerfile 에서 직접 COPY (이미지에 포함)
-#     → 이미지 크기가 커지지만 독립 실행 가능
-#     → COPY ./vits-mms-kor /app/model 주석 해제 후 사용
-#
-#   방법 B. docker run 시 볼륨 마운트 (기본 권장)
+#   방법 B. 실행 시 볼륨 마운트 (기본 권장)
 #     → docker run -v ./vits-mms-kor:/app/model ...
-#     → 모델 업데이트 시 이미지 재빌드 불필요
-#
-# 아래 COPY 줄은 방법 A 사용 시 주석 해제하세요.
 # ----------------------------------------------------------
 # COPY ./vits-mms-kor /app/model
 
-# 모델 마운트 포인트 디렉터리 생성
 RUN mkdir -p /app/model /app/output
 
-# 출력 WAV 를 컨테이너 밖에서 확인할 수 있도록 볼륨 선언
 VOLUME ["/app/output"]
 
 # ----------------------------------------------------------
@@ -100,11 +105,11 @@ ENV MODEL_DIR=/app/model \
 # ----------------------------------------------------------
 # 컨테이너 실행 진입점
 #
-# 환경 변수를 JVM 시스템 프로퍼티로 전달합니다.
-# JAVA_OPTS 로 추가 JVM 옵션(힙 크기 등)을 주입할 수 있습니다.
+# -Djava.library.path=/app/libs 로 네이티브 .so 로드 경로 지정
 # ----------------------------------------------------------
 ENTRYPOINT ["sh", "-c", \
   "exec java $JAVA_OPTS \
+    -Djava.library.path=/app/libs \
     -Dmodel.dir=$MODEL_DIR \
     -Doutput.wav=$OUTPUT_WAV \
     -Dtts.text=\"$TTS_TEXT\" \

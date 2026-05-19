@@ -1,6 +1,9 @@
 // ============================================================
 // sherpa-onnx 한국어 TTS PoC - Gradle 빌드 설정
-// Java 17 / Gradle 8.7 / Shadow (Fat) JAR
+// Java 17 / Gradle 8.x / Shadow (Fat) JAR
+//
+// sherpa-onnx 는 Maven Central 미배포 → GitHub Releases 에서
+// 직접 다운로드한 JAR / .so 파일을 libs/ 디렉터리에 배치하여 사용
 // ============================================================
 
 plugins {
@@ -13,7 +16,7 @@ plugins {
 group   = 'com.example.tts'
 version = '1.0.0'
 
-// Java 17 소스/타겟 호환성
+// Java 17 소스/타겟 호환성 (JDK 21 이상에서도 컴파일 가능)
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
@@ -30,34 +33,23 @@ repositories {
 
 dependencies {
     // -------------------------------------------------------
-    // sherpa-onnx Java API (JNI 바인딩 포함)
+    // sherpa-onnx Java API JAR (로컬 파일 의존성)
     //
-    // Maven Central 좌표: com.k2fsa.sherpa.onnx:sherpa-onnx
-    // 최신 버전 확인: https://central.sonatype.com/search?q=sherpa-onnx
+    // 다운로드 출처:
+    //   https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.0/sherpa-onnx-v1.12.0-java17.jar
     //
-    // ※ 실제 배포 버전에 따라 아래 버전 문자열을 조정하세요.
-    //   (예: 1.10.38 → 프로젝트 릴리즈 페이지에서 확인)
+    // libs/ 디렉터리에 다음 파일이 있어야 합니다:
+    //   libs/sherpa-onnx-java17.jar         ← Java API (JNI 스텁)
+    //   libs/libsherpa-onnx-jni.so          ← 네이티브 JNI 라이브러리
+    //   libs/libonnxruntime.so              ← ONNX Runtime 공유 라이브러리
     // -------------------------------------------------------
-    implementation 'com.k2fsa.sherpa.onnx:sherpa-onnx:1.10.38'
-
-    // -------------------------------------------------------
-    // Linux x86_64 네이티브 라이브러리 (Docker 컨테이너 환경 필수)
-    //
-    // 이 artifact 에는 libsherpa-onnx-jni.so 등 .so 파일이
-    // 포함되어 있으며, sherpa-onnx Java API 가 런타임에
-    // JAR 내부에서 임시 디렉터리로 추출하여 로드합니다.
-    //
-    // macOS(arm64/x86_64)나 Windows 환경에서 로컬 빌드 시에는
-    // 해당 플랫폼용 artifact 로 교체하세요:
-    //   macOS:   sherpa-onnx-macos-x86-64 / sherpa-onnx-macos-aarch64
-    //   Windows: sherpa-onnx-win-x86-64
-    // -------------------------------------------------------
-    runtimeOnly 'com.k2fsa.sherpa.onnx:sherpa-onnx-linux-x86-64:1.10.38'
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
 }
 
 // -------------------------------------------------------
 // Shadow (Fat) JAR 설정
-// 모든 의존성(네이티브 .so 포함)을 단일 JAR 로 패키징
+// Java API JAR 를 단일 실행 가능 JAR 로 패키징
+// (네이티브 .so 파일은 JAR 외부에 위치 → java.library.path 로 지정)
 // -------------------------------------------------------
 shadowJar {
     archiveBaseName.set('tts-poc')
@@ -71,25 +63,25 @@ shadowJar {
         )
     }
 
-    // ServiceLoader SPI 파일 병합 (여러 JAR 의 META-INF/services 충돌 방지)
+    // ServiceLoader SPI 파일 병합 (META-INF/services 충돌 방지)
     mergeServiceFiles()
-
-    // 중복 전략: 네이티브 .so 파일은 첫 번째 항목을 우선 사용
-    duplicatesStrategy = DuplicatesStrategy.FIRST
 }
 
 // 기본 'build' 태스크가 shadowJar 를 포함하도록 연결
 build.dependsOn shadowJar
 
 // -------------------------------------------------------
-// 로컬 실행 편의 태스크: ./gradlew run
-// -Dmodel.dir=<경로> 로 모델 디렉터리를 오버라이드할 수 있음
+// 로컬 실행 편의 태스크: ./gradlew run (또는 gradle run)
+//
+// 네이티브 .so 파일 로드를 위해 java.library.path 를 libs/ 로 지정
+// JVM 이 libsherpa-onnx-jni.so, libonnxruntime.so 를 찾는 경로
 // -------------------------------------------------------
 run {
-    // 기본 모델 경로 (로컬 테스트용, Dockerfile 에서는 /app/model 사용)
-    systemProperty 'model.dir', System.getProperty('model.dir', './vits-mms-kor')
-    // 합성할 텍스트 (커맨드라인 오버라이드 가능)
-    systemProperty 'tts.text', System.getProperty('tts.text', '안녕하세요. 셰르파 온넥스 한국어 TTS 테스트입니다.')
-    // 출력 WAV 경로
+    // 네이티브 라이브러리 경로 (libs/ 폴더)
+    jvmArgs "-Djava.library.path=${projectDir}/libs"
+
+    // 기본 실행 파라미터 (커맨드라인 -D 옵션으로 오버라이드 가능)
+    systemProperty 'model.dir',  System.getProperty('model.dir',  './vits-mms-kor')
+    systemProperty 'tts.text',   System.getProperty('tts.text',   '안녕하세요. 셰르파 온넥스 한국어 TTS 테스트입니다.')
     systemProperty 'output.wav', System.getProperty('output.wav', './output.wav')
 }
