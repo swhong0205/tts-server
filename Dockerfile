@@ -39,6 +39,7 @@ RUN apt-get update \
         libgomp1 \
         locales \
         curl \
+        bzip2 \
     && locale-gen ko_KR.UTF-8 \
     && update-locale LANG=ko_KR.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
