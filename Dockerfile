@@ -48,11 +48,11 @@ COPY libs/*.so /app/libs/
 
 RUN mkdir -p /app/model /app/output \
     && curl -fL \
-        "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-mimic3-ko_KO-kss_low.tar.bz2" \
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-mimic3-ko_KO-kss_medium.tar.bz2" \
         -o /tmp/model.tar.bz2 \
     && tar -xjf /tmp/model.tar.bz2 -C /tmp/ \
-    && cp -r /tmp/vits-mimic3-ko_KO-kss_low/. /app/model/ \
-    && rm -rf /tmp/model.tar.bz2 /tmp/vits-mimic3-ko_KO-kss_low
+    && cp -r /tmp/vits-mimic3-ko_KO-kss_medium/. /app/model/ \
+    && rm -rf /tmp/model.tar.bz2 /tmp/vits-mimic3-ko_KO-kss_medium
 
 VOLUME ["/app/output"]
 
