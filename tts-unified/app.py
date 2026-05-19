@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, HTMLResponse
 from pydantic import BaseModel
 import os, io, glob, wave, logging
@@ -67,7 +66,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Korean TTS", version="1.0.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
 class SynthRequest(BaseModel):
