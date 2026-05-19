@@ -1,94 +1,186 @@
 package com.example.tts;
 
-import com.k2fsa.sherpa.onnx.GeneratedAudio;
-import com.k2fsa.sherpa.onnx.OfflineTts;
-import com.k2fsa.sherpa.onnx.OfflineTtsConfig;
-import com.k2fsa.sherpa.onnx.OfflineTtsModelConfig;
-import com.k2fsa.sherpa.onnx.OfflineTtsVitsModelConfig;
+import com.k2fsa.sherpa.onnx.*;
+import com.sun.net.httpserver.*;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.io.*;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
 import java.util.Optional;
+import java.util.concurrent.*;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.regex.*;
 
 /**
- * sherpa-onnx v1.12.0 Java API를 이용한 한국어 TTS PoC.
+ * sherpa-onnx 한국어 TTS HTTP 서버
  *
- * 지원 모델:
- *   - vits-mimic3-ko_KO-kss_low (기본, entrypoint.sh 자동 다운로드)
- *   - vits-mms-kor 등 다른 VITS 모델도 model.dir 변경으로 사용 가능
+ * 엔드포인트:
+ *   GET  /          → 웹 UI (텍스트 입력 → 음성 재생)
+ *   GET  /health    → {"status":"ok"}
+ *   POST /tts       → WAV 파일 (audio/wav)
  *
- * JVM 시스템 프로퍼티:
- *   -Djava.library.path=./libs   libsherpa-onnx-jni.so 경로 (필수)
- *   -Dmodel.dir=<경로>            모델 디렉터리 (기본값: ./vits-mms-kor)
- *   -Dmodel.onnx=<파일명>         ONNX 파일명 지정 (생략 시 자동 탐색)
- *   -Dtts.text=<텍스트>           합성할 한국어 텍스트
- *   -Doutput.wav=<경로>           출력 WAV 파일 경로
- *   -Dtts.sid=<번호>              화자 ID (기본값: 0)
- *   -Dtts.speed=<배속>            말하기 속도 배율 (기본값: 1.0)
+ * POST /tts 요청 바디 (application/json):
+ *   {"text":"합성할 텍스트", "speed":1.0, "sid":0}
  */
 public class SherpaTtsPoc {
 
-    private static final String DEFAULT_MODEL_DIR  = "./vits-mms-kor";
-    private static final String DEFAULT_OUTPUT_WAV = "./output.wav";
-    private static final String DEFAULT_TEXT =
-            "안녕하세요. 셰르파 온넥스 한국어 TTS 테스트입니다.";
+    private static final String DEFAULT_MODEL_DIR = "/app/model";
 
-    public static void main(String[] args) throws IOException {
+    private static OfflineTts tts;
+    // generate() 직렬화 (스레드 안전)
+    private static final ReentrantLock ttsLock = new ReentrantLock();
 
-        // -------------------------------------------------------
-        // 1) 실행 파라미터 로드
-        // -------------------------------------------------------
-        String modelDir  = System.getProperty("model.dir",  DEFAULT_MODEL_DIR);
-        String outputWav = System.getProperty("output.wav", DEFAULT_OUTPUT_WAV);
-        String text      = System.getProperty("tts.text",   DEFAULT_TEXT);
-        int    sid       = Integer.parseInt(System.getProperty("tts.sid",   "0"));
-        float  speed     = Float.parseFloat(System.getProperty("tts.speed", "1.0"));
+    public static void main(String[] args) throws Exception {
+
+        String modelDir = System.getenv().getOrDefault("MODEL_DIR",
+                          System.getProperty("model.dir", DEFAULT_MODEL_DIR));
+        int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
 
         System.out.println("=================================================");
-        System.out.println(" sherpa-onnx 한국어 TTS PoC (v1.12.0)");
+        System.out.println(" sherpa-onnx 한국어 TTS 서버 (v1.12.0)");
         System.out.println("=================================================");
         System.out.println("[설정] 모델 디렉터리 : " + modelDir);
-        System.out.println("[설정] 출력 파일     : " + outputWav);
-        System.out.println("[설정] 합성 텍스트   : " + text);
-        System.out.println("[설정] 화자 ID       : " + sid);
-        System.out.println("[설정] 말하기 속도   : " + speed);
-        System.out.println("-------------------------------------------------");
+        System.out.println("[설정] 리슨 포트     : " + port);
 
-        // -------------------------------------------------------
-        // 2) 모델 파일 경로 자동 탐색
-        //
-        //    -Dmodel.onnx 로 파일명을 직접 지정하거나,
-        //    생략 시 modelDir 에서 첫 번째 .onnx 파일을 자동 선택
-        //
-        //    지원 모델 예시:
-        //      vits-mimic3-ko_KO-kss_low/  → ko_KO-kss_low.onnx
-        //      vits-mms-kor/               → model.onnx
-        // -------------------------------------------------------
-        Path modelDirPath = Paths.get(modelDir).toAbsolutePath();
-        if (!Files.isDirectory(modelDirPath)) {
-            System.err.println("[오류] 모델 디렉터리가 존재하지 않습니다: " + modelDirPath);
-            System.err.println("       -Dmodel.dir 경로를 확인하거나 entrypoint.sh 를 통해 실행하세요.");
-            System.exit(1);
+        System.out.println("[진행] TTS 엔진 초기화 중...");
+        tts = initTts(modelDir);
+        System.out.println("[완료] TTS 엔진 초기화 성공.");
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (tts != null) tts.release();
+            System.out.println("[정리] TTS 엔진 리소스 해제 완료.");
+        }));
+
+        HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+        server.createContext("/",       new UiHandler());
+        server.createContext("/health", new HealthHandler());
+        server.createContext("/tts",    new TtsHandler());
+        server.setExecutor(Executors.newFixedThreadPool(4));
+        server.start();
+
+        System.out.println("[시작] 서버 실행 중: http://0.0.0.0:" + port);
+        System.out.println("=================================================");
+    }
+
+    // -------------------------------------------------------
+    // GET / → 웹 UI
+    // -------------------------------------------------------
+    static class UiHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!exchange.getRequestURI().getPath().equals("/")) {
+                exchange.sendResponseHeaders(404, -1);
+                return;
+            }
+            byte[] bytes = HTML.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream os = exchange.getResponseBody()) { os.write(bytes); }
         }
+    }
 
-        // ONNX 파일: 직접 지정 우선, 없으면 디렉터리에서 자동 탐색
-        Path onnxFile = resolveOnnxFile(modelDirPath);
-        Path tokensFile = modelDirPath.resolve("tokens.txt");
+    // -------------------------------------------------------
+    // GET /health
+    // -------------------------------------------------------
+    static class HealthHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            sendJson(exchange, 200, "{\"status\":\"ok\",\"engine\":\"sherpa-onnx\"}");
+        }
+    }
+
+    // -------------------------------------------------------
+    // POST /tts → WAV
+    // -------------------------------------------------------
+    static class TtsHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            // CORS 헤더 (브라우저에서 fetch 호출 허용)
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "POST, OPTIONS");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type");
+
+            if ("OPTIONS".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(204, -1);
+                return;
+            }
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                sendJson(exchange, 405, "{\"error\":\"POST 메서드만 허용됩니다\"}");
+                return;
+            }
+
+            try {
+                String reqBody = new String(
+                        exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+
+                String text  = parseJsonString(reqBody, "text");
+                float  speed = parseJsonFloat(reqBody,  "speed", 1.0f);
+                int    sid   = parseJsonInt(reqBody,    "sid",   0);
+
+                if (text == null || text.isBlank()) {
+                    sendJson(exchange, 400, "{\"error\":\"text 필드가 필요합니다\"}");
+                    return;
+                }
+
+                System.out.printf("[TTS] text=\"%.30s...\" speed=%.1f sid=%d%n",
+                        text, speed, sid);
+                long start = System.currentTimeMillis();
+
+                byte[] wavBytes = generateWav(text, sid, speed);
+
+                long elapsed = System.currentTimeMillis() - start;
+                System.out.printf("[TTS] 완료 %d ms, %d bytes%n", elapsed, wavBytes.length);
+
+                exchange.getResponseHeaders().set("Content-Type", "audio/wav");
+                exchange.getResponseHeaders().set("Content-Disposition",
+                        "inline; filename=\"tts.wav\"");
+                exchange.getResponseHeaders().set("X-Elapsed-Ms", String.valueOf(elapsed));
+                exchange.sendResponseHeaders(200, wavBytes.length);
+                try (OutputStream os = exchange.getResponseBody()) { os.write(wavBytes); }
+
+            } catch (Exception e) {
+                System.err.println("[오류] " + e.getMessage());
+                sendJson(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
+            }
+        }
+    }
+
+    // -------------------------------------------------------
+    // TTS 생성 (임시 파일 경유)
+    // -------------------------------------------------------
+    private static byte[] generateWav(String text, int sid, float speed) throws IOException {
+        Path tmp = Files.createTempFile("tts-", ".wav");
+        try {
+            ttsLock.lock();
+            try {
+                GeneratedAudio audio = tts.generate(text, sid, speed);
+                if (!audio.save(tmp.toString())) throw new IOException("WAV 저장 실패");
+            } finally {
+                ttsLock.unlock();
+            }
+            return Files.readAllBytes(tmp);
+        } finally {
+            Files.deleteIfExists(tmp);
+        }
+    }
+
+    // -------------------------------------------------------
+    // TTS 엔진 초기화
+    // -------------------------------------------------------
+    private static OfflineTts initTts(String modelDir) throws IOException {
+        Path dir        = Paths.get(modelDir).toAbsolutePath();
+        Path onnxFile   = resolveOnnxFile(dir);
+        Path tokensFile = dir.resolve("tokens.txt");
 
         validateFile(onnxFile,   "ONNX 모델 파일");
         validateFile(tokensFile, "토큰 파일(tokens.txt)");
 
-        // espeak-ng-data 디렉터리 (mimic3 계열 모델에서 필요)
-        Path espeakDataDir = modelDirPath.resolve("espeak-ng-data");
-        String dataDir = Files.isDirectory(espeakDataDir) ? espeakDataDir.toString() : "";
+        Path espeakDir = dir.resolve("espeak-ng-data");
+        String dataDir = Files.isDirectory(espeakDir) ? espeakDir.toString() : "";
         System.out.printf("[설정] espeak-ng-data : %s%n",
                 dataDir.isEmpty() ? "(사용 안 함)" : dataDir);
 
-        // -------------------------------------------------------
-        // 3) sherpa-onnx TTS 설정 구성
-        // -------------------------------------------------------
         OfflineTtsVitsModelConfig vitsConfig = new OfflineTtsVitsModelConfig.Builder()
                 .setModel(onnxFile.toString())
                 .setTokens(tokensFile.toString())
@@ -112,77 +204,225 @@ public class SherpaTtsPoc {
                 .setMaxNumSentences(1)
                 .build();
 
-        // -------------------------------------------------------
-        // 4) TTS 엔진 초기화 및 음성 합성
-        // -------------------------------------------------------
-        OfflineTts tts = null;
-        try {
-            System.out.println("[진행] TTS 엔진 초기화 중...");
-            tts = new OfflineTts(ttsConfig);
-            System.out.println("[완료] TTS 엔진 초기화 성공.");
-
-            long startMs = System.currentTimeMillis();
-            System.out.println("[진행] 음성 합성 중...");
-
-            GeneratedAudio audio = tts.generate(text, sid, speed);
-            long elapsedMs = System.currentTimeMillis() - startMs;
-
-            // -------------------------------------------------------
-            // 5) WAV 파일 저장
-            // -------------------------------------------------------
-            Path outputPath = Paths.get(outputWav).toAbsolutePath();
-            Files.createDirectories(outputPath.getParent());
-
-            if (!audio.save(outputPath.toString())) {
-                throw new RuntimeException("WAV 파일 저장 실패: " + outputPath);
-            }
-
-            System.out.println("-------------------------------------------------");
-            System.out.println("[완료] 음성 합성 성공!");
-            System.out.printf ("[결과] 출력 파일   : %s%n", outputPath);
-            System.out.printf ("[결과] 샘플 레이트 : %d Hz%n", audio.getSampleRate());
-            System.out.printf ("[결과] 소요 시간   : %d ms%n", elapsedMs);
-            System.out.println("=================================================");
-
-        } catch (Exception e) {
-            System.err.println("[오류] TTS 처리 중 예외 발생: " + e.getMessage());
-            e.printStackTrace(System.err);
-            System.exit(1);
-
-        } finally {
-            // 6) 네이티브 리소스 해제
-            if (tts != null) {
-                tts.release();
-                System.out.println("[정리] TTS 엔진 리소스 해제 완료.");
-            }
-        }
+        return new OfflineTts(ttsConfig);
     }
 
-    /**
-     * 모델 디렉터리에서 ONNX 파일을 찾습니다.
-     * -Dmodel.onnx 로 지정된 파일명을 우선 사용하고,
-     * 없으면 디렉터리 내 첫 번째 .onnx 파일을 반환합니다.
-     */
-    private static Path resolveOnnxFile(Path modelDirPath) throws IOException {
-        String specifiedName = System.getProperty("model.onnx");
-        if (specifiedName != null && !specifiedName.isEmpty()) {
-            return modelDirPath.resolve(specifiedName);
-        }
-        Optional<Path> found = Files.list(modelDirPath)
+    // -------------------------------------------------------
+    // 유틸리티
+    // -------------------------------------------------------
+    private static Path resolveOnnxFile(Path dir) throws IOException {
+        String name = System.getProperty("model.onnx");
+        if (name != null && !name.isBlank()) return dir.resolve(name);
+        Optional<Path> found = Files.list(dir)
                 .filter(p -> p.toString().endsWith(".onnx"))
                 .findFirst();
-        if (found.isEmpty()) {
-            System.err.println("[오류] 모델 디렉터리에 .onnx 파일이 없습니다: " + modelDirPath);
-            System.exit(1);
-        }
+        if (found.isEmpty()) throw new RuntimeException(".onnx 파일 없음: " + dir);
         return found.get();
     }
 
-    private static void validateFile(Path path, String description) {
-        if (!Files.exists(path)) {
-            System.err.printf("[오류] %s 을(를) 찾을 수 없습니다: %s%n", description, path);
+    private static void validateFile(Path p, String desc) {
+        if (!Files.exists(p)) {
+            System.err.printf("[오류] %s 없음: %s%n", desc, p);
             System.exit(1);
         }
-        System.out.printf("[확인] %-25s → %s%n", description, path);
+        System.out.printf("[확인] %-25s → %s%n", desc, p);
     }
+
+    private static void sendJson(HttpExchange ex, int code, String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().set("Content-Type", "application/json");
+        ex.sendResponseHeaders(code, bytes.length);
+        try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+    }
+
+    private static String parseJsonString(String json, String key) {
+        Matcher m = Pattern.compile("\"" + key + "\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"")
+                           .matcher(json);
+        return m.find() ? m.group(1) : null;
+    }
+
+    private static float parseJsonFloat(String json, String key, float def) {
+        Matcher m = Pattern.compile("\"" + key + "\"\\s*:\\s*([0-9.]+)").matcher(json);
+        return m.find() ? Float.parseFloat(m.group(1)) : def;
+    }
+
+    private static int parseJsonInt(String json, String key, int def) {
+        Matcher m = Pattern.compile("\"" + key + "\"\\s*:\\s*(\\d+)").matcher(json);
+        return m.find() ? Integer.parseInt(m.group(1)) : def;
+    }
+
+    // -------------------------------------------------------
+    // 웹 UI HTML (인라인)
+    // -------------------------------------------------------
+    private static final String HTML = """
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>sherpa-onnx 한국어 TTS</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      padding: 36px 40px;
+      width: 100%;
+      max-width: 560px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+    }
+    h1 { font-size: 1.4rem; color: #1a1a2e; margin-bottom: 6px; }
+    .subtitle { font-size: 0.85rem; color: #888; margin-bottom: 28px; }
+    label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 6px; font-weight: 500; }
+    textarea {
+      width: 100%;
+      height: 120px;
+      border: 1.5px solid #dde1e7;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font-size: 1rem;
+      resize: vertical;
+      outline: none;
+      transition: border-color .2s;
+      font-family: inherit;
+      color: #222;
+    }
+    textarea:focus { border-color: #4f6ef7; }
+    .controls {
+      display: flex;
+      gap: 16px;
+      margin: 16px 0;
+    }
+    .control-group { flex: 1; }
+    input[type=range] { width: 100%; accent-color: #4f6ef7; }
+    .range-row { display: flex; justify-content: space-between; align-items: center; }
+    .range-val { font-size: 0.85rem; color: #4f6ef7; font-weight: 600; min-width: 32px; text-align: right; }
+    button {
+      width: 100%;
+      padding: 14px;
+      background: #4f6ef7;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .2s, transform .1s;
+      margin-top: 8px;
+    }
+    button:hover:not(:disabled) { background: #3a57e8; }
+    button:active:not(:disabled) { transform: scale(0.98); }
+    button:disabled { background: #a0aec0; cursor: not-allowed; }
+    .status {
+      margin-top: 16px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 0.88rem;
+      display: none;
+    }
+    .status.loading { background: #ebf0ff; color: #4f6ef7; display: block; }
+    .status.success { background: #e6faf2; color: #1a7f5a; display: block; }
+    .status.error   { background: #fff0f0; color: #c0392b; display: block; }
+    audio { width: 100%; margin-top: 16px; border-radius: 8px; display: none; }
+    audio.visible { display: block; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <h1>🔊 한국어 TTS 데모</h1>
+  <p class="subtitle">sherpa-onnx · vits-mimic3-ko_KO-kss_low</p>
+
+  <label for="text">합성할 텍스트</label>
+  <textarea id="text" placeholder="여기에 한국어 텍스트를 입력하세요.">안녕하세요. 셰르파 온넥스 한국어 TTS 데모입니다.</textarea>
+
+  <div class="controls">
+    <div class="control-group">
+      <label>말하기 속도</label>
+      <div class="range-row">
+        <input type="range" id="speed" min="0.5" max="2.0" step="0.1" value="1.0">
+        <span class="range-val" id="speedVal">1.0</span>
+      </div>
+    </div>
+    <div class="control-group">
+      <label>화자 ID</label>
+      <div class="range-row">
+        <input type="range" id="sid" min="0" max="10" step="1" value="0">
+        <span class="range-val" id="sidVal">0</span>
+      </div>
+    </div>
+  </div>
+
+  <button id="btn" onclick="synthesize()">음성 합성</button>
+
+  <div class="status" id="status"></div>
+  <audio id="player" controls></audio>
+</div>
+
+<script>
+  document.getElementById('speed').oninput = e =>
+    document.getElementById('speedVal').textContent = (+e.target.value).toFixed(1);
+  document.getElementById('sid').oninput = e =>
+    document.getElementById('sidVal').textContent = e.target.value;
+
+  async function synthesize() {
+    const text  = document.getElementById('text').value.trim();
+    const speed = parseFloat(document.getElementById('speed').value);
+    const sid   = parseInt(document.getElementById('sid').value);
+    const btn   = document.getElementById('btn');
+    const status = document.getElementById('status');
+    const player = document.getElementById('player');
+
+    if (!text) { showStatus('error', '텍스트를 입력해 주세요.'); return; }
+
+    btn.disabled = true;
+    showStatus('loading', '⏳ 음성 합성 중...');
+    player.classList.remove('visible');
+
+    try {
+      const t0 = Date.now();
+      const res = await fetch('/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, speed, sid })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.error || res.statusText);
+      }
+
+      const blob = await res.blob();
+      const elapsed = Date.now() - t0;
+      const url = URL.createObjectURL(blob);
+
+      player.src = url;
+      player.classList.add('visible');
+      player.play();
+
+      showStatus('success', `✅ 합성 완료 (${elapsed} ms · ${(blob.size/1024).toFixed(1)} KB)`);
+    } catch (e) {
+      showStatus('error', '❌ 오류: ' + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function showStatus(type, msg) {
+    const el = document.getElementById('status');
+    el.className = 'status ' + type;
+    el.textContent = msg;
+  }
+</script>
+</body>
+</html>
+""";
 }

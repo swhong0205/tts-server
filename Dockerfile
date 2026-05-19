@@ -79,22 +79,17 @@ VOLUME ["/app/output"]
 # 환경 변수 (Render 대시보드 또는 docker run -e 로 오버라이드)
 # ----------------------------------------------------------
 ENV MODEL_DIR=/app/model \
-    OUTPUT_WAV=/app/output/output.wav \
-    TTS_TEXT="안녕하세요. 셰르파 온넥스 한국어 TTS 테스트입니다." \
-    TTS_SID=0 \
-    TTS_SPEED=1.0 \
+    PORT=8080 \
     JAVA_OPTS=""
 
 # ----------------------------------------------------------
 # 실행 진입점
+# PORT: Render 가 자동 주입하는 HTTP 포트
 # -Djava.library.path=/app/libs : 네이티브 .so 로드 경로
 # ----------------------------------------------------------
+EXPOSE 8080
 ENTRYPOINT ["sh", "-c", \
   "exec java $JAVA_OPTS \
     -Djava.library.path=/app/libs \
     -Dmodel.dir=$MODEL_DIR \
-    -Doutput.wav=$OUTPUT_WAV \
-    -Dtts.text=\"$TTS_TEXT\" \
-    -Dtts.sid=$TTS_SID \
-    -Dtts.speed=$TTS_SPEED \
     -jar /app/tts-poc.jar"]
