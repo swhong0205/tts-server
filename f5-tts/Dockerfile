@@ -3,19 +3,20 @@ FROM python:3.11-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git build-essential ffmpeg \
+        git build-essential ffmpeg espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 모델 미리 다운로드 (cold start 방지)
+# F5-TTS 모델 미리 다운로드
 RUN python -c "from f5_tts.api import F5TTS; F5TTS()"
 
-COPY app.py .
+COPY generate_reference.py .
+# 참조 오디오 생성 (gTTS → espeak-ng 순으로 시도)
+RUN python generate_reference.py
 
-# reference.wav + reference.txt 는 볼륨 또는 빌드 시 COPY로 제공
-# docker run -v /path/to/reference.wav:/app/reference.wav ...
+COPY app.py .
 
 EXPOSE 8000
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
