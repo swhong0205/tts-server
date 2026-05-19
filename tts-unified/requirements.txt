@@ -1,8 +1,5 @@
 fastapi
 uvicorn[standard]
 sherpa-onnx
-f5-tts
 soundfile
 numpy
-gtts
-pydub

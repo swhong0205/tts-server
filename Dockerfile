@@ -1,24 +1,16 @@
 # ============================================================
-# 한국어 TTS 통합 서버 (Sherpa-ONNX + F5-TTS)
+# 한국어 TTS 서버 (Sherpa-ONNX)
 # ============================================================
 FROM python:3.11-slim
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git build-essential ffmpeg espeak-ng curl bzip2 \
+        curl bzip2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Python 의존성
 COPY tts-unified/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# F5-TTS 모델 미리 다운로드
-RUN python -c "from f5_tts.api import F5TTS; F5TTS()"
-
-# 참조 오디오 생성 (F5-TTS용)
-COPY tts-unified/generate_reference.py .
-RUN python generate_reference.py
 
 # Sherpa-ONNX 한국어 모델 다운로드
 RUN mkdir -p /app/model \
