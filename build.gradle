@@ -35,8 +35,8 @@ dependencies {
     // -------------------------------------------------------
     // sherpa-onnx Java API JAR (로컬 파일 의존성)
     //
-    // 다운로드 출처:
-    //   https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.0/sherpa-onnx-v1.12.0-java17.jar
+    // 빌드 방법: sherpa-onnx v1.13.2 소스의 sherpa-onnx/java-api 를 javac 로 컴파일
+    //   (v1.13.2부터 standalone jar 미배포 → 소스 컴파일 필요)
     //
     // libs/ 디렉터리에 다음 파일이 있어야 합니다:
     //   libs/sherpa-onnx-java17.jar         ← Java API (JNI 스텁)

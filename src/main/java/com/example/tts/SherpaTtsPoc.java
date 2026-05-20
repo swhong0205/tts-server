@@ -7,6 +7,8 @@ import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.*;
 import java.util.concurrent.locks.ReentrantLock;
@@ -28,7 +30,7 @@ public class SherpaTtsPoc {
     private static final String DEFAULT_MODEL_DIR = "/app/model";
 
     private static OfflineTts tts;
-    // generate() 직렬화 (스레드 안전)
+    private static boolean isSupertonic = false;
     private static final ReentrantLock ttsLock = new ReentrantLock();
 
     public static void main(String[] args) throws Exception {
@@ -154,7 +156,18 @@ public class SherpaTtsPoc {
         try {
             ttsLock.lock();
             try {
-                GeneratedAudio audio = tts.generate(text, sid, speed);
+                GeneratedAudio audio;
+                if (isSupertonic) {
+                    GenerationConfig cfg = new GenerationConfig();
+                    cfg.setSid(sid);
+                    cfg.setSpeed(speed);
+                    Map<String, String> extra = new HashMap<>();
+                    extra.put("lang", "ko");
+                    cfg.setExtra(extra);
+                    audio = tts.generateWithConfigAndCallback(text, cfg, samples -> 1);
+                } else {
+                    audio = tts.generate(text, sid, speed);
+                }
                 if (!audio.save(tmp.toString())) throw new IOException("WAV 저장 실패");
             } finally {
                 ttsLock.unlock();
@@ -166,37 +179,59 @@ public class SherpaTtsPoc {
     }
 
     // -------------------------------------------------------
-    // TTS 엔진 초기화
+    // TTS 엔진 초기화 (tts.json 존재 시 Supertonic, 없으면 VITS)
     // -------------------------------------------------------
     private static OfflineTts initTts(String modelDir) throws IOException {
-        Path dir        = Paths.get(modelDir).toAbsolutePath();
-        Path onnxFile   = resolveOnnxFile(dir);
-        Path tokensFile = dir.resolve("tokens.txt");
+        Path dir = Paths.get(modelDir).toAbsolutePath();
+        Path ttsJson = dir.resolve("tts.json");
 
-        validateFile(onnxFile,   "ONNX 모델 파일");
-        validateFile(tokensFile, "토큰 파일(tokens.txt)");
+        OfflineTtsModelConfig modelConfig;
 
-        Path espeakDir = dir.resolve("espeak-ng-data");
-        String dataDir = Files.isDirectory(espeakDir) ? espeakDir.toString() : "";
-        System.out.printf("[설정] espeak-ng-data : %s%n",
-                dataDir.isEmpty() ? "(사용 안 함)" : dataDir);
-
-        OfflineTtsVitsModelConfig vitsConfig = new OfflineTtsVitsModelConfig.Builder()
-                .setModel(onnxFile.toString())
-                .setTokens(tokensFile.toString())
-                .setLexicon("")
-                .setDataDir(dataDir)
-                .setNoiseScale(0.667f)
-                .setNoiseScaleW(0.8f)
-                .setLengthScale(1.0f)
-                .build();
-
-        OfflineTtsModelConfig modelConfig = new OfflineTtsModelConfig.Builder()
-                .setVits(vitsConfig)
-                .setNumThreads(2)
-                .setDebug(false)
-                .setProvider("cpu")
-                .build();
+        if (Files.exists(ttsJson)) {
+            isSupertonic = true;
+            System.out.println("[설정] 모델 타입 : Supertonic-3");
+            String d = dir.toString() + "/";
+            OfflineTtsSupertonicModelConfig supertonicConfig =
+                    OfflineTtsSupertonicModelConfig.builder()
+                            .setDurationPredictor(d + "duration_predictor.int8.onnx")
+                            .setTextEncoder(d + "text_encoder.int8.onnx")
+                            .setVectorEstimator(d + "vector_estimator.int8.onnx")
+                            .setVocoder(d + "vocoder.int8.onnx")
+                            .setTtsJson(d + "tts.json")
+                            .setUnicodeIndexer(d + "unicode_indexer.bin")
+                            .setVoiceStyle(d + "voice.bin")
+                            .build();
+            modelConfig = OfflineTtsModelConfig.builder()
+                    .setSupertonic(supertonicConfig)
+                    .setNumThreads(2)
+                    .setDebug(false)
+                    .setProvider("cpu")
+                    .build();
+        } else {
+            isSupertonic = false;
+            System.out.println("[설정] 모델 타입 : VITS");
+            Path onnxFile   = resolveOnnxFile(dir);
+            Path tokensFile = dir.resolve("tokens.txt");
+            validateFile(onnxFile,   "ONNX 모델 파일");
+            validateFile(tokensFile, "토큰 파일(tokens.txt)");
+            Path espeakDir = dir.resolve("espeak-ng-data");
+            String dataDir = Files.isDirectory(espeakDir) ? espeakDir.toString() : "";
+            OfflineTtsVitsModelConfig vitsConfig = new OfflineTtsVitsModelConfig.Builder()
+                    .setModel(onnxFile.toString())
+                    .setTokens(tokensFile.toString())
+                    .setLexicon("")
+                    .setDataDir(dataDir)
+                    .setNoiseScale(0.667f)
+                    .setNoiseScaleW(0.8f)
+                    .setLengthScale(1.0f)
+                    .build();
+            modelConfig = OfflineTtsModelConfig.builder()
+                    .setVits(vitsConfig)
+                    .setNumThreads(2)
+                    .setDebug(false)
+                    .setProvider("cpu")
+                    .build();
+        }
 
         OfflineTtsConfig ttsConfig = new OfflineTtsConfig.Builder()
                 .setModel(modelConfig)
