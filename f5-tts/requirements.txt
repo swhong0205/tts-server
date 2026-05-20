@@ -1,6 +1,0 @@
-fastapi
-uvicorn[standard]
-f5-tts
-soundfile
-gtts
-pydub
