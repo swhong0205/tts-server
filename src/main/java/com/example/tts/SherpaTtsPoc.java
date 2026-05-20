@@ -5,14 +5,14 @@ import com.sun.net.httpserver.*;
 
 import java.io.*;
 import java.net.*;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.*;
+import java.util.stream.*;
 
 /**
  * sherpa-onnx 한국어 TTS HTTP 서버
@@ -29,9 +29,12 @@ public class SherpaTtsPoc {
 
     private static final String DEFAULT_MODEL_DIR = "/app/model";
 
-    private static OfflineTts tts;
+    private static final int POOL_SIZE = Integer.parseInt(
+            System.getenv().getOrDefault("TTS_POOL_SIZE", "2"));
+    private static final ArrayBlockingQueue<OfflineTts> ttsPool = new ArrayBlockingQueue<>(POOL_SIZE);
+    private static final ExecutorService synthExecutor = Executors.newFixedThreadPool(POOL_SIZE);
     private static boolean isSupertonic = false;
-    private static final ReentrantLock ttsLock = new ReentrantLock();
+    private static int ttsModelSampleRate = 22050;
 
     public static void main(String[] args) throws Exception {
 
@@ -45,12 +48,17 @@ public class SherpaTtsPoc {
         System.out.println("[설정] 모델 디렉터리 : " + modelDir);
         System.out.println("[설정] 리슨 포트     : " + port);
 
-        System.out.println("[진행] TTS 엔진 초기화 중...");
-        tts = initTts(modelDir);
+        System.out.printf("[진행] TTS 엔진 초기화 중... (풀 크기: %d)%n", POOL_SIZE);
+        for (int i = 0; i < POOL_SIZE; i++) {
+            OfflineTts instance = initTts(modelDir);
+            if (i == 0) ttsModelSampleRate = instance.getSampleRate();
+            ttsPool.offer(instance);
+        }
         System.out.println("[완료] TTS 엔진 초기화 성공.");
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            if (tts != null) tts.release();
+            synthExecutor.shutdown();
+            ttsPool.forEach(OfflineTts::release);
             System.out.println("[정리] TTS 엔진 리소스 해제 완료.");
         }));
 
@@ -142,40 +150,110 @@ public class SherpaTtsPoc {
                 try (OutputStream os = exchange.getResponseBody()) { os.write(wavBytes); }
 
             } catch (Exception e) {
-                System.err.println("[오류] " + e.getMessage());
-                sendJson(exchange, 500, "{\"error\":\"" + e.getMessage() + "\"}");
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
+                System.err.println("[오류] " + cause.getMessage());
+                sendJson(exchange, 500, "{\"error\":\"" + cause.getMessage() + "\"}");
             }
         }
     }
 
     // -------------------------------------------------------
-    // TTS 생성 (임시 파일 경유)
+    // 텍스트 분할 (구두점 기준)
     // -------------------------------------------------------
-    private static byte[] generateWav(String text, int sid, float speed) throws IOException {
-        Path tmp = Files.createTempFile("tts-", ".wav");
-        try {
-            ttsLock.lock();
-            try {
-                GeneratedAudio audio;
-                if (isSupertonic) {
-                    GenerationConfig cfg = new GenerationConfig();
-                    cfg.setSid(sid);
-                    cfg.setSpeed(speed);
-                    Map<String, String> extra = new HashMap<>();
-                    extra.put("lang", "ko");
-                    cfg.setExtra(extra);
-                    audio = tts.generateWithConfigAndCallback(text, cfg, samples -> 1);
-                } else {
-                    audio = tts.generate(text, sid, speed);
-                }
-                if (!audio.save(tmp.toString())) throw new IOException("WAV 저장 실패");
-            } finally {
-                ttsLock.unlock();
-            }
-            return Files.readAllBytes(tmp);
-        } finally {
-            Files.deleteIfExists(tmp);
+    private static List<String> splitText(String text) {
+        String[] parts = text.split("(?<=[.!?。！？,，;；])");
+        List<String> chunks = new ArrayList<>();
+        for (String p : parts) {
+            String t = p.strip();
+            if (!t.isEmpty()) chunks.add(t);
         }
+        return chunks.isEmpty() ? List.of(text.strip()) : chunks;
+    }
+
+    // -------------------------------------------------------
+    // 단일 청크 합성 (풀에서 인스턴스 빌려 사용)
+    // -------------------------------------------------------
+    private static float[] synthesizeChunk(String chunk, int sid, float speed) {
+        OfflineTts instance;
+        try {
+            instance = ttsPool.take();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("TTS 풀 대기 중단", e);
+        }
+        try {
+            GeneratedAudio audio;
+            if (isSupertonic) {
+                GenerationConfig cfg = new GenerationConfig();
+                cfg.setSid(sid);
+                cfg.setSpeed(speed);
+                Map<String, String> extra = new HashMap<>();
+                extra.put("lang", "ko");
+                cfg.setExtra(extra);
+                audio = instance.generateWithConfigAndCallback(chunk, cfg, samples -> 1);
+            } else {
+                audio = instance.generate(chunk, sid, speed);
+            }
+            return audio.getSamples();
+        } finally {
+            ttsPool.offer(instance);
+        }
+    }
+
+    // -------------------------------------------------------
+    // TTS 생성 — 청크 병렬 합성 후 WAV 반환
+    // -------------------------------------------------------
+    private static byte[] generateWav(String text, int sid, float speed) throws Exception {
+        List<String> chunks = splitText(text);
+        System.out.printf("[TTS] 청크 %d개로 분할%n", chunks.size());
+
+        List<CompletableFuture<float[]>> futures = chunks.stream()
+                .map(chunk -> CompletableFuture.supplyAsync(
+                        () -> synthesizeChunk(chunk, sid, speed), synthExecutor))
+                .collect(Collectors.toList());
+
+        // 순서 보장하며 샘플 수집
+        int totalLen = 0;
+        List<float[]> results = new ArrayList<>();
+        for (CompletableFuture<float[]> f : futures) {
+            float[] s = f.join();
+            results.add(s);
+            totalLen += s.length;
+        }
+
+        // 이어붙이기
+        float[] combined = new float[totalLen];
+        int pos = 0;
+        for (float[] s : results) {
+            System.arraycopy(s, 0, combined, pos, s.length);
+            pos += s.length;
+        }
+
+        return samplesToWav(combined, ttsModelSampleRate);
+    }
+
+    // -------------------------------------------------------
+    // float[] 샘플 → WAV 바이트
+    // -------------------------------------------------------
+    private static byte[] samplesToWav(float[] samples, int sampleRate) {
+        int dataLen = samples.length * 2;
+        ByteBuffer buf = ByteBuffer.allocate(44 + dataLen).order(ByteOrder.LITTLE_ENDIAN);
+        buf.put(new byte[]{'R','I','F','F'});
+        buf.putInt(36 + dataLen);
+        buf.put(new byte[]{'W','A','V','E','f','m','t',' '});
+        buf.putInt(16);
+        buf.putShort((short) 1);   // PCM
+        buf.putShort((short) 1);   // mono
+        buf.putInt(sampleRate);
+        buf.putInt(sampleRate * 2);
+        buf.putShort((short) 2);   // block align
+        buf.putShort((short) 16);  // bits per sample
+        buf.put(new byte[]{'d','a','t','a'});
+        buf.putInt(dataLen);
+        for (float s : samples) {
+            buf.putShort((short) Math.max(-32768, Math.min(32767, (int)(s * 32767))));
+        }
+        return buf.array();
     }
 
     // -------------------------------------------------------
