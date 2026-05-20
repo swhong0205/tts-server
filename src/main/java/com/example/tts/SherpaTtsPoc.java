@@ -201,6 +201,21 @@ public class SherpaTtsPoc {
     }
 
     // -------------------------------------------------------
+    // 구두점 종류에 따른 무음 길이 (샘플 수)
+    // -------------------------------------------------------
+    private static int silenceSamples(String chunk) {
+        char last = chunk.charAt(chunk.length() - 1);
+        return switch (last) {
+            case '.', '。'       -> ttsModelSampleRate * 250 / 1000; // 250ms
+            case '?', '？',
+                 '!', '！'       -> ttsModelSampleRate * 300 / 1000; // 300ms
+            case ',', '，',
+                 ';', '；'       -> ttsModelSampleRate * 120 / 1000; // 120ms
+            default              -> ttsModelSampleRate * 150 / 1000; // 150ms
+        };
+    }
+
+    // -------------------------------------------------------
     // TTS 생성 — 청크 병렬 합성 후 WAV 반환
     // -------------------------------------------------------
     private static byte[] generateWav(String text, int sid, float speed) throws Exception {
@@ -213,20 +228,23 @@ public class SherpaTtsPoc {
                 .collect(Collectors.toList());
 
         // 순서 보장하며 샘플 수집
-        int totalLen = 0;
         List<float[]> results = new ArrayList<>();
-        for (CompletableFuture<float[]> f : futures) {
-            float[] s = f.join();
+        int totalLen = 0;
+        for (int i = 0; i < futures.size(); i++) {
+            float[] s = futures.get(i).join();
             results.add(s);
             totalLen += s.length;
+            if (i < chunks.size() - 1) totalLen += silenceSamples(chunks.get(i));
         }
 
-        // 이어붙이기
-        float[] combined = new float[totalLen];
+        // 이어붙이기 (청크 사이 구두점별 무음 삽입)
+        float[] combined = new float[totalLen]; // 0.0f 로 초기화됨
         int pos = 0;
-        for (float[] s : results) {
+        for (int i = 0; i < results.size(); i++) {
+            float[] s = results.get(i);
             System.arraycopy(s, 0, combined, pos, s.length);
             pos += s.length;
+            if (i < chunks.size() - 1) pos += silenceSamples(chunks.get(i));
         }
 
         return samplesToWav(combined, ttsModelSampleRate);
