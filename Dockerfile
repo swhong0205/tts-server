@@ -9,7 +9,7 @@
 # ----------------------------------------------------------
 # Stage 1: 빌드 스테이지
 # ----------------------------------------------------------
-FROM gradle:8.7-jdk17-jammy AS builder
+FROM gradle:8.7-jdk21-jammy AS builder
 
 WORKDIR /build
 
@@ -25,7 +25,7 @@ RUN gradle shadowJar --no-daemon --no-build-cache \
 # ----------------------------------------------------------
 # Stage 2: 런타임 스테이지
 # ----------------------------------------------------------
-FROM eclipse-temurin:17-jre-jammy AS runtime
+FROM eclipse-temurin:21-jre-jammy AS runtime
 
 ARG TARGETARCH
 
