@@ -40,7 +40,7 @@ public class SherpaTtsPoc {
         int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
 
         System.out.println("=================================================");
-        System.out.println(" sherpa-onnx 한국어 TTS 서버 (v1.12.0)");
+        System.out.println(" sherpa-onnx 한국어 TTS 서버 (v1.13.2 / Supertonic-3)");
         System.out.println("=================================================");
         System.out.println("[설정] 모델 디렉터리 : " + modelDir);
         System.out.println("[설정] 리슨 포트     : " + port);
@@ -88,7 +88,7 @@ public class SherpaTtsPoc {
     static class HealthHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            sendJson(exchange, 200, "{\"status\":\"ok\",\"engine\":\"sherpa-onnx\"}");
+            sendJson(exchange, 200, "{\"status\":\"ok\",\"engine\":\"supertonic-3\"}");
         }
     }
 
