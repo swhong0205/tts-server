@@ -27,6 +27,8 @@ RUN gradle shadowJar --no-daemon --no-build-cache \
 # ----------------------------------------------------------
 FROM eclipse-temurin:17-jre-jammy AS runtime
 
+ARG TARGETARCH
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libstdc++6 \
@@ -44,7 +46,19 @@ ENV LANG=ko_KR.UTF-8 \
 WORKDIR /app
 
 COPY --from=builder /build/build/libs/tts-poc.jar /app/tts-poc.jar
-COPY libs/*.so /app/libs/
+
+# 아키텍처에 맞는 JNI .so 다운로드 (amd64 → x64, arm64 → aarch64)
+RUN case "$TARGETARCH" in \
+      arm64) ARCH=aarch64 ;; \
+      *)     ARCH=x64 ;; \
+    esac \
+    && mkdir -p /app/libs \
+    && curl -fL \
+        "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-v1.13.2-linux-${ARCH}-jni.tar.bz2" \
+        -o /tmp/jni.tar.bz2 \
+    && tar -xjf /tmp/jni.tar.bz2 -C /tmp/ \
+    && cp /tmp/sherpa-onnx-v1.13.2-linux-${ARCH}-jni/lib/*.so /app/libs/ \
+    && rm -rf /tmp/jni.tar.bz2 /tmp/sherpa-onnx-v1.13.2-linux-${ARCH}-jni
 
 RUN mkdir -p /app/model /app/output \
     && curl -fL \

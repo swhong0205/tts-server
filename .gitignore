@@ -10,6 +10,9 @@ build/
 # 모델 파일 (용량이 크므로 Git 미포함 — Git LFS 또는 별도 배포 권장)
 vits-mms-kor/
 
+# JNI 네이티브 라이브러리 (Dockerfile에서 아키텍처별 다운로드)
+libs/*.so
+
 # 생성된 WAV 출력물
 *.wav
 output/
