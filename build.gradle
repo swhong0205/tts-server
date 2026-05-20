@@ -18,8 +18,8 @@ version = '1.0.0'
 
 // Java 17 소스/타겟 호환성 (JDK 21 이상에서도 컴파일 가능)
 java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = '21'
+    targetCompatibility = '21'
 }
 
 // 실행 진입점 설정
